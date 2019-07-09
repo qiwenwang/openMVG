@@ -27,6 +27,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <experimental/filesystem>
 
 using namespace openMVG;
 using namespace openMVG::cameras;
@@ -37,11 +38,15 @@ using namespace openMVG::sfm;
 
 /// Check that Kmatrix is a string like "f;0;ppx;0;f;ppy;0;0;1"
 /// With f,ppx,ppy as valid numerical value
-bool checkIntrinsicStringValidity(const std::string & Kmatrix, double & focal, double & ppx, double & ppy)
+bool checkIntrinsicStringValidity(const std::string & Kmatrixs, std::vector<double> & focals,
+                                  std::vector<double> & ppxs, std::vector<double> & ppys)
 {
+  focals.clear();
+  ppxs.clear();
+  ppys.clear();
   std::vector<std::string> vec_str;
-  stl::split(Kmatrix, ';', vec_str);
-  if (vec_str.size() != 9)  {
+  stl::split(Kmatrixs, ';', vec_str);
+  if (vec_str.size() == 0 || vec_str.size() % 9 != 0)  {
     std::cerr << "\n Missing ';' character" << std::endl;
     return false;
   }
@@ -54,11 +59,73 @@ bool checkIntrinsicStringValidity(const std::string & Kmatrix, double & focal, d
       std::cerr << "\n Used an invalid not a number character" << std::endl;
       return false;
     }
-    if (i==0) focal = readvalue;
-    if (i==2) ppx = readvalue;
-    if (i==5) ppy = readvalue;
+    size_t component = i % 9;
+    if (component==0) focals.push_back(readvalue);
+    if (component==2) ppxs.push_back(readvalue);
+    if (component==5) ppys.push_back(readvalue);
   }
   return true;
+}
+
+bool checkImageDirsStringValidity(const std::string& sImageDirs, std::vector<std::string> &ImageDirs, std::string sCombinationDirectory) {
+  ImageDirs.clear();
+  std::vector<std::string> vec_str;
+  stl::split(sImageDirs, ';', vec_str);
+  if (vec_str.size() == 0) {
+    std::cerr << "\n Missing ';' character" << std::endl;
+    return false;
+  }
+  // Check that all ImageDir all exist
+  for (size_t i = 0; i < vec_str.size(); ++i) {
+    if (!stlplus::folder_exists(vec_str[i])) {
+      std::cerr << "\n" << vec_str[i] << "does not exist." << std::endl;
+      return false;
+    }
+    ImageDirs.push_back(vec_str[i]);
+  }
+
+  if (ImageDirs.size() != 1 && sCombinationDirectory.empty()) {
+    std::cerr << "Must offer sCombinationDirectory" << std::endl;
+    return false;
+  }
+  return true;
+}
+
+inline bool image_filename_less(const std::pair<std::string, size_t> &p1, const std::pair<std::string, size_t> &p2) {
+  return (p1.first.compare(p2.first) < 0);
+}
+
+std::vector<std::pair<std::string, size_t>> aggregateImageDirs(std::vector<std::string> &ImageDirs, std::string &sInputFolder) {
+  std::vector<std::pair<std::string, size_t>> SortedImages;
+
+  if (ImageDirs.size() == 1) {
+    std::vector<std::string> vec_image = stlplus::folder_files(ImageDirs[0]);
+    std::sort(vec_image.begin(), vec_image.end());
+    for ( std::vector<std::string>::const_iterator iter_image = vec_image.begin(); iter_image != vec_image.end(); ++iter_image) {
+      if (openMVG::image::GetFormat((*iter_image).c_str()) == openMVG::image::Unknown)
+        continue;
+      SortedImages.push_back(std::make_pair(*iter_image, 0));
+    }
+  } else {
+    for (size_t i=0; i<ImageDirs.size(); ++i) {
+      std::vector<std::string> vec_image = stlplus::folder_files(ImageDirs[i]);
+      for ( std::vector<std::string>::const_iterator iter_image = vec_image.begin(); iter_image != vec_image.end(); ++iter_image) {
+        if (openMVG::image::GetFormat((*iter_image).c_str()) == openMVG::image::Unknown)
+          continue;
+        std::string ImageFilenameSrc = stlplus::create_filespec(ImageDirs[i], *iter_image);
+        std::string ImageFilenameDest = stlplus::create_filespec(sInputFolder, *iter_image);
+        std::experimental::filesystem::create_symlink(ImageFilenameSrc, ImageFilenameDest);
+        SortedImages.push_back(std::make_pair(*iter_image, i));
+      }
+    }
+    std::sort(SortedImages.begin(), SortedImages.end(), image_filename_less);
+  }
+
+  return SortedImages;
+}
+
+void SortInputImages(const std::vector<std::string> &ImageDirs) {
+
 }
 
 std::pair<bool, Vec3> checkGPS
@@ -135,10 +202,12 @@ int main(int argc, char **argv)
 {
   CmdLine cmd;
 
-  std::string sImageDir,
-    sfileDatabase = "",
-    sOutputDir = "",
-    sKmatrix;
+  std::string sImageDirs,
+  sCombinationDirectory = "",
+  sfileDatabase = "",
+  sOutputDir = "",
+  sKmatrixs;
+
 
   std::string sPriorWeights;
   std::pair<bool, Vec3> prior_w_info(false, Vec3(1.0,1.0,1.0));
@@ -151,11 +220,12 @@ int main(int argc, char **argv)
 
   double focal_pixels = -1.0;
 
-  cmd.add( make_option('i', sImageDir, "imageDirectory") );
+  cmd.add( make_option('a', sCombinationDirectory, "--combinationDirectory"));
+  cmd.add( make_option('i', sImageDirs, "imageDirectories") );
   cmd.add( make_option('d', sfileDatabase, "sensorWidthDatabase") );
   cmd.add( make_option('o', sOutputDir, "outputDirectory") );
   cmd.add( make_option('f', focal_pixels, "focal") );
-  cmd.add( make_option('k', sKmatrix, "intrinsics") );
+  cmd.add( make_option('k', sKmatrixs, "intrinsics") );
   cmd.add( make_option('c', i_User_camera_model, "camera_model") );
   cmd.add( make_option('g', b_Group_camera_model, "group_camera_model") );
   cmd.add( make_switch('P', "use_pose_prior") );
@@ -167,11 +237,12 @@ int main(int argc, char **argv)
       cmd.process(argc, argv);
   } catch (const std::string& s) {
       std::cerr << "Usage: " << argv[0] << '\n'
-      << "[-i|--imageDirectory]\n"
+      << "[-a|--combinationDirectory]: if you have multiple intrinsics, you must offer the argument to accommodate multiple source image.\n"
+      << "[-i|--imageDirectories] sImageDirs: \"input1;input2...\"\n"
       << "[-d|--sensorWidthDatabase]\n"
       << "[-o|--outputDirectory]\n"
       << "[-f|--focal] (pixels)\n"
-      << "[-k|--intrinsics] Kmatrix: \"f;0;ppx;0;f;ppy;0;0;1\"\n"
+      << "[-k|--intrinsics] Kmatrixs: \"f;0;ppx;0;f;ppy;0;0;1...\"\n"
       << "[-c|--camera_model] Camera model type:\n"
       << "\t 1: Pinhole\n"
       << "\t 2: Pinhole radial 1\n"
@@ -197,24 +268,46 @@ int main(int argc, char **argv)
 
   std::cout << " You called : " <<std::endl
             << argv[0] << std::endl
-            << "--imageDirectory " << sImageDir << std::endl
+            << "--combinationDirectory " << sCombinationDirectory << std::endl
+            << "--imageDirectories " << sImageDirs << std::endl
             << "--sensorWidthDatabase " << sfileDatabase << std::endl
             << "--outputDirectory " << sOutputDir << std::endl
             << "--focal " << focal_pixels << std::endl
-            << "--intrinsics " << sKmatrix << std::endl
+            << "--intrinsics " << sKmatrixs << std::endl
             << "--camera_model " << i_User_camera_model << std::endl
             << "--group_camera_model " << b_Group_camera_model << std::endl;
 
   // Expected properties for each image
-  double width = -1, height = -1, focal = -1, ppx = -1,  ppy = -1;
+  std::vector<double> focals, ppxs, ppys;
+  std::vector<std::string> ImageDirs;
+  std::vector<std::pair<std::string, size_t>> SortedImages;
 
   const EINTRINSIC e_User_camera_model = EINTRINSIC(i_User_camera_model);
 
-  if ( !stlplus::folder_exists( sImageDir ) )
-  {
-    std::cerr << "\nThe input directory doesn't exist" << std::endl;
+  if (!checkImageDirsStringValidity(sImageDirs, ImageDirs, sCombinationDirectory)) {
     return EXIT_FAILURE;
   }
+
+  if (ImageDirs.size() != 1) {
+    if ( !stlplus::folder_exists( sCombinationDirectory ) ) {
+      if ( !stlplus::folder_create( sCombinationDirectory ) ) {
+        std::cerr << "\nCannot create " << sCombinationDirectory << " directory" << std::endl;
+        return EXIT_FAILURE;
+      }
+    } else {
+        if (!std::experimental::filesystem::is_empty(sCombinationDirectory)) {
+          std::experimental::filesystem::remove_all(sCombinationDirectory);
+          if ( !stlplus::folder_create( sCombinationDirectory ) ) {
+            std::cerr << "\nCannot create " << sCombinationDirectory << " directory" << std::endl;
+            return EXIT_FAILURE;
+          }
+        }
+    }
+  } else {
+    sCombinationDirectory = ImageDirs[0];
+  }
+
+  SortedImages = aggregateImageDirs(ImageDirs, sCombinationDirectory);
 
   if (sOutputDir.empty())
   {
@@ -231,14 +324,14 @@ int main(int argc, char **argv)
     }
   }
 
-  if (sKmatrix.size() > 0 &&
-    !checkIntrinsicStringValidity(sKmatrix, focal, ppx, ppy) )
+  if (sKmatrixs.size() > 0 &&
+    !checkIntrinsicStringValidity(sKmatrixs, focals, ppxs, ppys) )
   {
     std::cerr << "\nInvalid K matrix input" << std::endl;
     return EXIT_FAILURE;
   }
 
-  if (sKmatrix.size() > 0 && focal_pixels != -1.0)
+  if (sKmatrixs.size() > 0 && focal_pixels != -1.0)
   {
     std::cerr << "\nCannot combine -f and -k options" << std::endl;
     return EXIT_FAILURE;
@@ -266,27 +359,21 @@ int main(int argc, char **argv)
     prior_w_info.first = true;
   }
 
-  std::vector<std::string> vec_image = stlplus::folder_files( sImageDir );
-  std::sort(vec_image.begin(), vec_image.end());
-
   // Configure an empty scene with Views and their corresponding cameras
   SfM_Data sfm_data;
-  sfm_data.s_root_path = sImageDir; // Setup main image root_path
+  sfm_data.s_root_path = sCombinationDirectory; // Setup main image root_path
   Views & views = sfm_data.views;
   Intrinsics & intrinsics = sfm_data.intrinsics;
 
-  C_Progress_display my_progress_bar( vec_image.size(),
+  C_Progress_display my_progress_bar( SortedImages.size(),
       std::cout, "\n- Image listing -\n" );
   std::ostringstream error_report_stream;
-  for ( std::vector<std::string>::const_iterator iter_image = vec_image.begin();
-    iter_image != vec_image.end();
-    ++iter_image, ++my_progress_bar )
-  {
+  for (size_t image_number =0; image_number<SortedImages.size(); ++image_number, ++my_progress_bar) {
     // Read meta data to fill camera parameter (w,h,focal,ppx,ppy) fields.
-    width = height = ppx = ppy = focal = -1.0;
+    double width = -1.0, height = -1.0, ppx = -1.0, ppy = -1.0, focal = -1.0;
 
-    const std::string sImageFilename = stlplus::create_filespec( sImageDir, *iter_image );
-    const std::string sImFilenamePart = stlplus::filename_part(sImageFilename);
+    const std::string sImageFilename = stlplus::create_filespec( sCombinationDirectory, SortedImages[image_number].first);
+    const std::string sImFilenamePart = stlplus::filename_part( sImageFilename);
 
     // Test if the image format is supported:
     if (openMVG::image::GetFormat(sImageFilename.c_str()) == openMVG::image::Unknown)
@@ -313,12 +400,16 @@ int main(int argc, char **argv)
     ppx = width / 2.0;
     ppy = height / 2.0;
 
-
     // Consider the case where the focal is provided manually
-    if (sKmatrix.size() > 0) // Known user calibration K matrix
+    if (sKmatrixs.size() > 0) // Known user calibration K matrix
     {
-      if (!checkIntrinsicStringValidity(sKmatrix, focal, ppx, ppy))
+      if (checkIntrinsicStringValidity(sKmatrixs, focals, ppxs, ppys)) {
+        focal = focals[SortedImages[image_number].second];
+        ppx = ppxs[SortedImages[image_number].second];
+        ppy = ppys[SortedImages[image_number].second];
+      } else {
         focal = -1.0;
+      }
     }
     else // User provided focal length value
       if (focal_pixels != -1 )
@@ -411,7 +502,7 @@ int main(int argc, char **argv)
     const std::pair<bool, Vec3> gps_info = checkGPS(sImageFilename, i_GPS_XYZ_method);
     if (gps_info.first && cmd.used('P'))
     {
-      ViewPriors v(*iter_image, views.size(), views.size(), views.size(), width, height);
+      ViewPriors v(SortedImages[image_number].first, views.size(), views.size(), views.size(), width, height);
 
       // Add intrinsic related to the image (if any)
       if (intrinsic == nullptr)
@@ -439,7 +530,7 @@ int main(int argc, char **argv)
     }
     else
     {
-      View v(*iter_image, views.size(), views.size(), views.size(), width, height);
+      View v(SortedImages[image_number].first, views.size(), views.size(), views.size(), width, height);
 
       // Add intrinsic related to the image (if any)
       if (intrinsic == nullptr)
@@ -484,7 +575,7 @@ int main(int argc, char **argv)
 
   std::cout << std::endl
     << "SfMInit_ImageListing report:\n"
-    << "listed #File(s): " << vec_image.size() << "\n"
+    << "listed #File(s): " << SortedImages.size() << "\n"
     << "usable #File(s) listed in sfm_data: " << sfm_data.GetViews().size() << "\n"
     << "usable #Intrinsic(s) listed in sfm_data: " << sfm_data.GetIntrinsics().size() << std::endl;
 
