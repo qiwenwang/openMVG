@@ -124,10 +124,6 @@ std::vector<std::pair<std::string, size_t>> aggregateImageDirs(std::vector<std::
   return SortedImages;
 }
 
-void SortInputImages(const std::vector<std::string> &ImageDirs) {
-
-}
-
 std::pair<bool, Vec3> checkGPS
 (
   const std::string & filename,
